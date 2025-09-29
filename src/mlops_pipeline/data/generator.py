@@ -21,17 +21,30 @@ class DataGeneratorActor(LoggerMixin):
         self, 
         n_samples: int,
         n_features: int = 20,
-        n_informative: int = 10,
-        n_redundant: int = 5,
+        n_informative: Optional[int] = None,
+        n_redundant: Optional[int] = None,
         n_clusters_per_class: int = 1,
         class_sep: float = 1.0,
         random_state: Optional[int] = None
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Generate a batch of classification data."""
+        # Auto-configure feature distribution if not specified
+        if n_informative is None:
+            n_informative = max(2, min(10, n_features // 2))
+        if n_redundant is None:
+            n_redundant = max(0, min(5, (n_features - n_informative) // 2))
+        
+        # Ensure valid feature configuration
+        if n_informative + n_redundant > n_features:
+            n_informative = max(2, n_features // 2)
+            n_redundant = max(0, n_features - n_informative - 1)
+        
         self.log_info(
             "Generating classification batch",
             n_samples=n_samples,
             n_features=n_features,
+            n_informative=n_informative,
+            n_redundant=n_redundant,
             random_state=random_state
         )
         
@@ -86,17 +99,31 @@ class DataGenerator(LoggerMixin):
         self,
         n_samples: int = 10000,
         n_features: int = 20,
-        n_informative: int = 10,
-        n_redundant: int = 5,
+        n_informative: Optional[int] = None,
+        n_redundant: Optional[int] = None,
         n_clusters_per_class: int = 1,
         class_sep: float = 1.0,
         n_workers: int = 4
     ) -> pd.DataFrame:
         """Generate a large classification dataset using distributed workers."""
+        # Auto-configure feature distribution if not specified
+        if n_informative is None:
+            n_informative = max(2, min(10, n_features // 2))
+        if n_redundant is None:
+            n_redundant = max(0, min(5, (n_features - n_informative) // 2))
+        
+        # Ensure valid feature configuration
+        if n_informative + n_redundant > n_features:
+            n_informative = max(2, n_features // 2)
+            n_redundant = max(0, n_features - n_informative - 1)
+        
         self.log_info(
             "Starting distributed classification data generation",
             total_samples=n_samples,
-            n_workers=n_workers
+            n_workers=n_workers,
+            n_features=n_features,
+            n_informative=n_informative,
+            n_redundant=n_redundant
         )
         
         # Calculate samples per worker
