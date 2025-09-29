@@ -1,0 +1,162 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: [3.9, "3.10", "3.11"]
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Cache pip dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install -e ".[dev]"
+
+    - name: Lint with flake8
+      run: |
+        flake8 src/ tests/ --count --select=E9,F63,F7,F82 --show-source --statistics
+        flake8 src/ tests/ --count --exit-zero --max-complexity=10 --max-line-length=88 --statistics
+
+    - name: Format check with black
+      run: |
+        black --check src/ tests/
+
+    - name: Import sort check with isort
+      run: |
+        isort --check-only src/ tests/
+
+    - name: Type check with mypy
+      run: |
+        mypy src/mlops_pipeline --ignore-missing-imports
+
+    - name: Test with pytest
+      run: |
+        pytest tests/ -v --cov=mlops_pipeline --cov-report=xml --cov-report=term-missing
+
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v3
+      with:
+        file: ./coverage.xml
+        flags: unittests
+        name: codecov-umbrella
+
+  build-docker:
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Build Docker image
+      run: |
+        docker build -f docker/Dockerfile -t mlops-pipeline:test .
+
+    - name: Test Docker image
+      run: |
+        docker run --rm mlops-pipeline:test mlops-pipeline --help
+
+  integration-test:
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'push'
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: "3.9"
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install -e .
+
+    - name: Run integration tests
+      run: |
+        # Simple integration test - generate data and train model
+        python << 'EOF'
+        import ray
+        from mlops_pipeline.utils.config import Config
+        from mlops_pipeline.data.generator import DataGenerator
+        from mlops_pipeline.data.processor import DataProcessor
+        from mlops_pipeline.training.trainer import ModelTrainer
+        
+        # Initialize Ray
+        ray.init(num_cpus=2, ignore_reinit_error=True)
+        
+        try:
+            # Test data generation
+            config = Config()
+            generator = DataGenerator(config.data)
+            df = generator.generate_classification_dataset(n_samples=100, n_features=5, n_workers=1)
+            print(f"Generated dataset: {df.shape}")
+            
+            # Test data processing
+            processor = DataProcessor(config.data)
+            processed_df = processor.process_dataset(df, n_workers=1)
+            splits = processor.create_train_test_split(processed_df)
+            print(f"Created splits: {list(splits.keys())}")
+            
+            # Test training
+            train_df = splits['train']
+            feature_columns = [col for col in train_df.columns 
+                              if col not in ['target', 'data_version', 'generated_timestamp']]
+            X_train = train_df[feature_columns]
+            y_train = train_df['target']
+            
+            trainer = ModelTrainer(config.training)
+            model, metrics = trainer.train_model(X_train, y_train, model_type="logistic_regression")
+            print(f"Training metrics: {metrics}")
+            
+            print("Integration test passed!")
+            
+        finally:
+            ray.shutdown()
+        EOF
+
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Run Trivy vulnerability scanner
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: 'fs'
+        scan-ref: '.'
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+
+    - name: Upload Trivy scan results to GitHub Security tab
+      uses: github/codeql-action/upload-sarif@v2
+      with:
+        sarif_file: 'trivy-results.sarif'

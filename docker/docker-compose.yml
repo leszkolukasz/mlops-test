@@ -1,0 +1,82 @@
+version: '3.8'
+
+services:
+  mlops-api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    ports:
+      - "8080:8080"  # FastAPI
+      - "8000:8000"  # Ray Serve
+      - "8265:8265"  # Ray Dashboard
+      - "9090:9090"  # Prometheus metrics
+    volumes:
+      - ../data:/app/data
+      - ../models:/app/models
+      - ../config:/app/config
+      - ../reports:/app/reports
+      - mlflow_data:/app/mlruns
+    environment:
+      - PYTHONPATH=/app/src
+      - RAY_DISABLE_IMPORT_WARNING=1
+      - MLFLOW_TRACKING_URI=sqlite:///mlflow.db
+    command: ["mlops-pipeline", "start-api", "--host", "0.0.0.0", "--port", "8080"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  mlflow-server:
+    image: python:3.9-slim
+    ports:
+      - "5000:5000"
+    volumes:
+      - mlflow_data:/mlflow
+    working_dir: /mlflow
+    command: >
+      sh -c "
+        pip install mlflow[extras]==2.8.1 &&
+        mlflow server 
+        --backend-store-uri sqlite:///mlflow.db 
+        --default-artifact-root ./artifacts 
+        --host 0.0.0.0 
+        --port 5000
+      "
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9091:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./grafana/datasources:/etc/grafana/provisioning/datasources
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+
+volumes:
+  mlflow_data:
+  prometheus_data:
+  grafana_data:
