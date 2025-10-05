@@ -1,0 +1,9 @@
+{
+  "prediction": 0,
+  "prediction_label": "setosa",
+  "probabilities": [
+    0.98,
+    0.01,
+    0.01
+  ]
+}
